@@ -1,0 +1,539 @@
+diff --git a/homeassistant/components/flic_button/__init__.py b/homeassistant/components/flic_button/__init__.py
+index 1b6e1e2..a421881 100644
+--- a/homeassistant/components/flic_button/__init__.py
++++ b/homeassistant/components/flic_button/__init__.py
+@@ -1,6 +1,7 @@
+ """The Flic Button integration."""
+ 
+ from dataclasses import dataclass
++from functools import partial
+ 
+ from bleak import BleakError
+ from pyflic_ble import (
+@@ -17,6 +18,7 @@ from homeassistant.config_entries import ConfigEntry
+ from homeassistant.const import CONF_ADDRESS, Platform
+ from homeassistant.core import HomeAssistant, callback
+ from homeassistant.exceptions import ConfigEntryNotReady
++from homeassistant.helpers.storage import Store
+ 
+ from .const import (
+     CONF_DEVICE_TYPE,
+@@ -26,11 +28,14 @@ from .const import (
+     CONF_SERIAL_NUMBER,
+     CONF_SIG_BITS,
+     DOMAIN,
++    POSITION_SAVE_DELAY,
++    STORAGE_VERSION,
+ )
+ 
+ PLATFORMS: list[Platform] = [
+     Platform.EVENT,
+     Platform.NUMBER,
++    Platform.SENSOR,
+ ]
+ 
+ 
+@@ -45,6 +50,26 @@ class FlicButtonData:
+ type FlicButtonConfigEntry = ConfigEntry[FlicButtonData]
+ 
+ 
++def _position_store(hass: HomeAssistant, entry: ConfigEntry) -> Store[dict[str, int]]:
++    """Return the store with the last event position of a Flic 1."""
++    return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
++
++
++@callback
++def _async_save_position(
++    store: Store[dict[str, int]], pairing_id: int, pairing_key: bytes, sig_bits: int
++) -> None:
++    """Save the position of a Flic 1 up to which events were received.
++
++    The pairing key does not change; the pairing id and the signature bits carry the
++    event counter, the boot counter and the events received.
++    """
++    store.async_delay_save(
++        lambda: {CONF_PAIRING_ID: pairing_id, CONF_SIG_BITS: sig_bits},
++        POSITION_SAVE_DELAY,
++    )
++
++
+ async def async_setup_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -> None:
+     """Set up Flic Button from a config entry."""
+ 
+@@ -55,7 +80,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -
+     pairing_key = bytes.fromhex(entry.data[CONF_PAIRING_KEY])
+     serial_number = entry.data.get(CONF_SERIAL_NUMBER)
+     device_type = DeviceType(entry.data[CONF_DEVICE_TYPE])
+-    sig_bits = entry.data.get(CONF_SIG_BITS, 0)
++    pairing_id: int = entry.data[CONF_PAIRING_ID]
++    sig_bits: int = entry.data.get(CONF_SIG_BITS, 0)
++    position_store = (
++        _position_store(hass, entry) if device_type is DeviceType.FLIC1 else None
++    )
++    if position_store and (saved := await position_store.async_load()):
++        pairing_id = saved[CONF_PAIRING_ID]
++        sig_bits = saved[CONF_SIG_BITS]
+     push_twist_mode = PushTwistMode(
+         entry.options.get(CONF_PUSH_TWIST_MODE, PushTwistMode.DEFAULT)
+     )
+@@ -63,7 +95,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -
+     client = FlicClient(
+         address=address,
+         ble_device=ble_device,
+-        pairing_id=entry.data[CONF_PAIRING_ID],
++        pairing_id=pairing_id,
+         pairing_key=pairing_key,
+         serial_number=serial_number,
+         device_type=device_type,
+@@ -76,6 +108,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -
+         serial_number=serial_number,
+     )
+     entry.async_on_unload(client.stop)
++    if position_store:
++        entry.async_on_unload(
++            client.register_credentials_callback(
++                partial(_async_save_position, position_store)
++            )
++        )
+ 
+     if ble_device:
+         try:
+@@ -99,7 +137,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -
+         change: bluetooth.BluetoothChange,
+     ) -> None:
+         """Handle Bluetooth updates for connection/reconnection."""
+-        client.set_ble_device(service_info.device)
++        client.set_ble_device(service_info.device, service_info.manufacturer_data)
+ 
+     entry.async_on_unload(
+         bluetooth.async_register_callback(
+@@ -126,3 +164,8 @@ async def _async_update_listener(
+ async def async_unload_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -> None:
+     """Unload a config entry."""
+     await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
++
++
++async def async_remove_entry(hass: HomeAssistant, entry: FlicButtonConfigEntry) -> None:
++    """Remove the stored event position of a Flic 1 with its config entry."""
++    await _position_store(hass, entry).async_remove()
+diff --git a/homeassistant/components/flic_button/cloud.py b/homeassistant/components/flic_button/cloud.py
+new file mode 100644
+index 0000000..597889a
+--- /dev/null
++++ b/homeassistant/components/flic_button/cloud.py
+@@ -0,0 +1,55 @@
++"""Flic cloud access for the Flic Button integration.
++
++A Flic 1 is unlocked by the Flic cloud once, when it is paired. Everything after
++that (connecting, button events) works without the internet.
++"""
++
++from http import HTTPStatus
++from typing import Final
++
++import aiohttp
++from pyflic_ble import Flic1UnlockRequest, FlicCloudUnlock
++
++from homeassistant.core import HomeAssistant
++from homeassistant.helpers.aiohttp_client import async_get_clientsession
++
++UNLOCK_URL: Final = "https://api.flic.io/api/v1/buttons/{button_uuid}/unlock"
++UNLOCK_TIMEOUT: Final = 15
++
++
++class FlicCloudError(Exception):
++    """The Flic cloud refused the request."""
++
++
++class FlicCloudConnectionError(FlicCloudError):
++    """The Flic cloud could not be reached."""
++
++
++def async_get_cloud_unlock(hass: HomeAssistant) -> FlicCloudUnlock:
++    """Return the callback with which pyflic-ble asks the Flic cloud to unlock a button."""
++    session = async_get_clientsession(hass)
++
++    async def async_unlock(
++        button_uuid: str, random_bytes: bytes, button_nonce: bytes
++    ) -> str:
++        """Ask the Flic cloud for the pairing secrets of a button."""
++        body = Flic1UnlockRequest(random_bytes, button_nonce).to_json()
++        try:
++            async with session.post(
++                UNLOCK_URL.format(button_uuid=button_uuid),
++                data=body,
++                headers={
++                    "Accept": "application/json",
++                    "Content-Type": "application/json",
++                },
++                timeout=aiohttp.ClientTimeout(total=UNLOCK_TIMEOUT),
++            ) as response:
++                text = await response.text()
++        except (aiohttp.ClientError, TimeoutError) as err:
++            raise FlicCloudConnectionError(str(err)) from err
++
++        if response.status != HTTPStatus.OK:
++            raise FlicCloudError(f"HTTP {response.status}")
++        return text
++
++    return async_unlock
+diff --git a/homeassistant/components/flic_button/config_flow.py b/homeassistant/components/flic_button/config_flow.py
+index c16187a..2d3e86e 100644
+--- a/homeassistant/components/flic_button/config_flow.py
++++ b/homeassistant/components/flic_button/config_flow.py
+@@ -15,7 +15,12 @@ from pyflic_ble import (
+     FlicProtocolError,
+     PushTwistMode,
+ )
+-from pyflic_ble.const import FLIC_SERVICE_UUID, PAIRING_TIMEOUT, TWIST_SERVICE_UUID
++from pyflic_ble.const import (
++    FLIC1_SERVICE_UUID,
++    FLIC_SERVICE_UUID,
++    PAIRING_TIMEOUT,
++    TWIST_SERVICE_UUID,
++)
+ 
+ from homeassistant.components.bluetooth import (
+     BluetoothScanningMode,
+@@ -32,6 +37,7 @@ from homeassistant.helpers.selector import (
+     SelectSelectorMode,
+ )
+ 
++from .cloud import FlicCloudError, async_get_cloud_unlock
+ from .const import (
+     CONF_DEVICE_TYPE,
+     CONF_PAIRING_ID,
+@@ -49,6 +55,28 @@ if TYPE_CHECKING:
+ _LOGGER = logging.getLogger(__name__)
+ 
+ 
++def _device_type_of(service_info: BluetoothServiceInfoBleak) -> DeviceType:
++    """Return the device type that a discovered Flic device advertises."""
++    service_uuids = [str(uuid).lower() for uuid in service_info.service_uuids]
++    if TWIST_SERVICE_UUID.lower() in service_uuids:
++        return DeviceType.TWIST
++    if FLIC1_SERVICE_UUID.lower() in service_uuids:
++        return DeviceType.FLIC1
++    return DeviceType.FLIC2
++
++
++def _is_flic1_paired_elsewhere(service_info: BluetoothServiceInfoBleak) -> bool:
++    """Return True for a Flic 1 that is not in pairing mode.
++
++    A Flic 1 that belongs to a host advertises a name that starts with a
++    lowercase f, one that waits to be paired (hold it for 7 seconds) with an F.
++    """
++    return (
++        _device_type_of(service_info) is DeviceType.FLIC1
++        and not (service_info.name or "").startswith("F")
++    )
++
++
+ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+     """Handle a config flow for Flic Button."""
+ 
+@@ -110,8 +138,11 @@ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+         if (
+             FLIC_SERVICE_UUID.lower() not in service_uuids
+             and TWIST_SERVICE_UUID.lower() not in service_uuids
++            and FLIC1_SERVICE_UUID.lower() not in service_uuids
+         ):
+             return False
++        if _is_flic1_paired_elsewhere(service_info):
++            return False
+         # After a Bluetooth discovery fell back to scanning, only the confirmed
+         # device may be paired
+         if self.unique_id is not None and service_info.address != self.unique_id:
+@@ -178,19 +209,14 @@ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+     ) -> ConfigFlowResult:
+         """Set discovery info from a found device and proceed to pairing."""
+         self._discovery_info = info
+-        service_uuids = [str(uuid).lower() for uuid in info.service_uuids]
+-
+-        if TWIST_SERVICE_UUID.lower() in service_uuids:
+-            self._device_type = DeviceType.TWIST
+-        else:
+-            self._device_type = DeviceType.FLIC2
++        self._device_type = _device_type_of(info)
+ 
+         await self.async_set_unique_id(info.address, raise_on_progress=False)
+         self._abort_if_unique_id_configured()
+ 
+         self.context["title_placeholders"] = {"name": info.name or info.address}
+ 
+-        # When start_pairing is True, skip showing the form and pair immediately
++        # When start_pairing is True, skip showing the form and pair immediately.
+         return await self.async_step_pair({} if start_pairing else None)
+ 
+     @override
+@@ -209,10 +235,9 @@ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+             service_uuids,
+             discovery_info.connectable,
+         )
+-        if TWIST_SERVICE_UUID.lower() in service_uuids:
+-            self._device_type = DeviceType.TWIST
+-        else:
+-            self._device_type = DeviceType.FLIC2
++        if _is_flic1_paired_elsewhere(discovery_info):
++            return self.async_abort(reason="not_in_pairing_mode")
++        self._device_type = _device_type_of(discovery_info)
+ 
+         self.context["title_placeholders"] = {
+             "name": discovery_info.name or discovery_info.address
+@@ -288,6 +313,11 @@ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+                     address=self._discovery_info.device.address,
+                     ble_device=self._discovery_info.device,
+                     device_type=self._device_type,
++                    cloud_unlock=(
++                        async_get_cloud_unlock(self.hass)
++                        if self._device_type is DeviceType.FLIC1
++                        else None
++                    ),
+                 )
+ 
+             try:
+@@ -310,6 +340,8 @@ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+                 errors["base"] = "pairing_failed"
+             except FlicAuthenticationError:
+                 errors["base"] = "invalid_signature"
++            except FlicCloudError:
++                errors["base"] = "cloud_error"
+             except Exception:
+                 _LOGGER.exception("Unexpected exception during pairing")
+                 errors["base"] = "unknown"
+@@ -320,14 +352,14 @@ class FlicButtonConfigFlow(ConfigFlow, domain=DOMAIN):
+ 
+             if not errors:
+                 final_device_type = (
+-                    DeviceType.TWIST
+-                    if self._device_type == DeviceType.TWIST
++                    self._device_type
++                    if self._device_type in (DeviceType.TWIST, DeviceType.FLIC1)
+                     else DeviceType.from_serial_number(serial_number)
+                 )
+                 model_name = DEVICE_TYPE_MODEL_NAMES[final_device_type]
+ 
+                 return self.async_create_entry(
+-                    title=f"{model_name} ({serial_number})",
++                    title=f"{model_name} ({serial_number or self._discovery_info.address})",
+                     data={
+                         CONF_ADDRESS: self._discovery_info.address,
+                         CONF_PAIRING_ID: pairing_id,
+diff --git a/homeassistant/components/flic_button/const.py b/homeassistant/components/flic_button/const.py
+index 524fe89..6e343a3 100644
+--- a/homeassistant/components/flic_button/const.py
++++ b/homeassistant/components/flic_button/const.py
+@@ -7,6 +7,7 @@ from pyflic_ble import DeviceType
+ DOMAIN: Final = "flic_button"
+ 
+ DEVICE_TYPE_MODEL_NAMES: Final = {
++    DeviceType.FLIC1: "Flic 1",
+     DeviceType.FLIC2: "Flic 2",
+     DeviceType.DUO: "Flic Duo",
+     DeviceType.TWIST: "Flic Twist",
+@@ -21,6 +22,11 @@ CONF_SIG_BITS: Final = (
+     "sig_bits"  # Ed25519 signature variant (0-3) for Twist quick verify
+ )
+ 
++# A Flic 1 numbers its events: the last number is kept in a store of its own,
++# because it changes with every press and the config entry would be reloaded
++STORAGE_VERSION: Final = 1
++POSITION_SAVE_DELAY: Final = 10  # seconds after the last press
++
+ # Event classes
+ EVENT_CLASS_BUTTON: Final = "button"
+ 
+diff --git a/homeassistant/components/flic_button/manifest.json b/homeassistant/components/flic_button/manifest.json
+index 4b3233a..bd7eb39 100644
+--- a/homeassistant/components/flic_button/manifest.json
++++ b/homeassistant/components/flic_button/manifest.json
+@@ -9,6 +9,10 @@
+     {
+       "connectable": true,
+       "service_uuid": "00c90000-2cbd-4f2a-a725-5ccd960ffb7d"
++    },
++    {
++      "connectable": true,
++      "service_uuid": "f02adfc0-26e7-11e4-9edc-0002a5d5c51b"
+     }
+   ],
+   "categories": ["buttons_remotes"],
+@@ -19,5 +23,5 @@
+   "integration_type": "device",
+   "iot_class": "local_push",
+   "quality_scale": "bronze",
+-  "requirements": ["pyflic-ble==0.2.5"]
++  "requirements": ["pyflic-ble==0.3.0"]
+ }
+diff --git a/homeassistant/components/flic_button/quality_scale.yaml b/homeassistant/components/flic_button/quality_scale.yaml
+index 3c6d59c..f3290e8 100644
+--- a/homeassistant/components/flic_button/quality_scale.yaml
++++ b/homeassistant/components/flic_button/quality_scale.yaml
+@@ -35,9 +35,7 @@ rules:
+   action-exceptions: done
+   config-entry-unloading: done
+   docs-configuration-parameters: done
+-  docs-installation-parameters:
+-    status: exempt
+-    comment: Pairing uses discovery and does not require user-supplied setup parameters.
++  docs-installation-parameters: done
+   entity-unavailable: done
+   integration-owner: done
+   log-when-unavailable: done
+@@ -80,7 +78,5 @@ rules:
+ 
+   # Platinum
+   async-dependency: done
+-  inject-websession:
+-    status: exempt
+-    comment: Event-only platform makes no external HTTP calls.
++  inject-websession: done
+   strict-typing: done
+diff --git a/homeassistant/components/flic_button/sensor.py b/homeassistant/components/flic_button/sensor.py
+new file mode 100644
+index 0000000..aadc30e
+--- /dev/null
++++ b/homeassistant/components/flic_button/sensor.py
+@@ -0,0 +1,112 @@
++"""Sensor platform for the Flic Button integration."""
++
++from collections.abc import Callable
++from dataclasses import dataclass
++from typing import override
++
++from pyflic_ble import DeviceType
++from pyflic_ble.const import FLIC1_BATTERY_RAW_TO_VOLTS
++
++from homeassistant.components.sensor import (
++    SensorDeviceClass,
++    SensorEntity,
++    SensorEntityDescription,
++    SensorStateClass,
++)
++from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfElectricPotential
++from homeassistant.core import HomeAssistant
++from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
++
++from . import FlicButtonConfigEntry, FlicButtonData
++from .entity import FlicButtonEntity
++
++PARALLEL_UPDATES = 0
++
++
++def flic1_battery_percentage(voltage: float) -> int:
++    """Return the charge of a Flic 1 in percent, on the scale of the Flic app.
++
++    The button reports its battery as a number (1136 is 2.0 V, 1705 is 3.0 V); the
++    app maps it piecewise: it is steep near full and flat near empty.
++    """
++    raw = round(voltage / FLIC1_BATTERY_RAW_TO_VOLTS)
++    if raw > 1705:
++        return 100
++    if raw > 1584:
++        return ((((raw - 1584) << 16) // 121 * 72) >> 16) + 28
++    if raw > 1360:
++        return ((((raw - 1360) << 16) // 224 * 24) >> 16) + 4
++    if raw > 1136:
++        return (((raw - 1136) << 16) // 224 * 4) >> 16
++    return 0
++
++
++@dataclass(frozen=True, kw_only=True)
++class FlicSensorEntityDescription(SensorEntityDescription):
++    """Describes a Flic sensor, computed from the battery voltage."""
++
++    value_fn: Callable[[float], float | int]
++
++
++SENSOR_DESCRIPTIONS: tuple[FlicSensorEntityDescription, ...] = (
++    FlicSensorEntityDescription(
++        key="battery",
++        device_class=SensorDeviceClass.BATTERY,
++        native_unit_of_measurement=PERCENTAGE,
++        state_class=SensorStateClass.MEASUREMENT,
++        entity_category=EntityCategory.DIAGNOSTIC,
++        value_fn=flic1_battery_percentage,
++    ),
++    FlicSensorEntityDescription(
++        key="battery_voltage",
++        translation_key="battery_voltage",
++        device_class=SensorDeviceClass.VOLTAGE,
++        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
++        state_class=SensorStateClass.MEASUREMENT,
++        entity_category=EntityCategory.DIAGNOSTIC,
++        entity_registry_enabled_default=False,
++        suggested_display_precision=2,
++        value_fn=lambda voltage: voltage,
++    ),
++)
++
++
++async def async_setup_entry(
++    hass: HomeAssistant,
++    entry: FlicButtonConfigEntry,
++    async_add_entities: AddConfigEntryEntitiesCallback,
++) -> None:
++    """Set up Flic Button sensors."""
++    data = entry.runtime_data
++
++    # Only a Flic 1 keeps its battery value current: the library reads the battery
++    # log of the button in the background
++    if data.client.device_type is not DeviceType.FLIC1:
++        return
++
++    async_add_entities(
++        FlicButtonSensorEntity(data, description) for description in SENSOR_DESCRIPTIONS
++    )
++
++
++class FlicButtonSensorEntity(FlicButtonEntity, SensorEntity):
++    """Representation of a Flic button sensor."""
++
++    entity_description: FlicSensorEntityDescription
++
++    def __init__(
++        self, data: FlicButtonData, description: FlicSensorEntityDescription
++    ) -> None:
++        """Initialize the sensor."""
++        super().__init__(data)
++        self.entity_description = description
++        self._attr_unique_id = f"{self._client.address}-{description.key}"
++
++    @property
++    @override
++    def native_value(self) -> float | int | None:
++        """Return the value of the sensor."""
++        voltage = self._client.state.battery_voltage
++        if voltage is None:
++            return None
++        return self.entity_description.value_fn(voltage)
+diff --git a/homeassistant/components/flic_button/strings.json b/homeassistant/components/flic_button/strings.json
+index 80d7d79..3411ac6 100644
+--- a/homeassistant/components/flic_button/strings.json
++++ b/homeassistant/components/flic_button/strings.json
+@@ -2,10 +2,12 @@
+   "config": {
+     "abort": {
+       "already_configured": "This Flic device is already configured.",
+-      "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]"
++      "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]",
++      "not_in_pairing_mode": "This Flic 1 belongs to another device. Hold the button for 7 seconds to make it available for pairing, then try again."
+     },
+     "error": {
+       "cannot_connect": "Failed to connect to the device. Make sure it is in range and try again.",
++      "cloud_error": "The Flic cloud could not be reached or refused the request. Check the internet connection and try again.",
+       "invalid_signature": "Invalid device signature during pairing.",
+       "pairing_failed": "Pairing failed. Please ensure the device is in pairing mode (LED flashing) and try again.",
+       "unknown": "An unexpected error occurred during pairing."
+@@ -126,6 +128,11 @@
+       "twist_position": {
+         "name": "Twist position"
+       }
++    },
++    "sensor": {
++      "battery_voltage": {
++        "name": "Battery voltage"
++      }
+     }
+   },
+   "exceptions": {

@@ -1,0 +1,12 @@
+.tools/
+re/samples/
+re/out/
+re/ref/
+re/ghidra-proj/
+__pycache__/
+.venv/
+captures/
+*.apk
+re/apk/
+re/brand-dl/
+re/firmware/

@@ -1,0 +1,55 @@
+{
+  "config": {
+    "progress": {
+      "pairing": "Przytrzymaj przycisk Flic 1 przez 7 sekund, aż dioda zacznie migać. Trzymaj go obok proxy Bluetooth, którego chcesz używać: przycisk działa tylko z tym proxy, przez które został sparowany. Parowanie wymaga jednorazowo dostępu do internetu."
+    },
+    "abort": {
+      "already_configured": "Ten przycisk jest już skonfigurowany",
+      "no_devices_found": "Przez minutę nie widziano Flic 1 w trybie parowania. Przytrzymaj przycisk 7 sekund i spróbuj ponownie.",
+      "cannot_connect": "Nie udało się połączyć z przyciskiem przez żadne proxy Bluetooth.",
+      "pairing_failed": "Przycisk nie dokończył parowania. Przytrzymaj go 7 sekund i spróbuj ponownie. Jeśli to nie pomaga, wyjmij najpierw baterię na kilka sekund. Szczegóły są w logu Home Assistanta.",
+      "cloud_error": "Chmura Flic odrzuciła zapytanie albo jest niedostępna."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Połączenie Flic 1",
+        "data": {
+          "auto_disconnect": "Sekundy ciszy, po których przycisk się rozłącza (511 = zostaje połączony)",
+          "latency": "Tryb łącza (stabilny = czasy Flic z 20 s limitem łącza, domyślny; proxy = zostaw ustawienia proxy, najodporniejszy, ale zużywa najwięcej baterii)",
+          "queued_timeout": "Ignoruj naciśnięcia starsze niż tyle sekund (0 = tylko bieżące)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "event": {
+      "button": {
+        "name": "Przycisk",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "down": "Wciśnięty",
+              "up": "Puszczony",
+              "single": "Pojedyncze kliknięcie",
+              "double": "Podwójne kliknięcie",
+              "hold": "Przytrzymanie"
+            }
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "latency": {
+      "options": {
+        "stable": "Stabilny (do 100 ms, 20 s limitu łącza)",
+        "normal": "Flic Normal (do 100 ms, 5 s limitu łącza)",
+        "low": "Flic Low (do 17,5 ms)",
+        "high": "Flic High (do 275 ms)",
+        "proxy": "Ustawienia proxy (zużywa najwięcej baterii)"
+      }
+    }
+  }
+}

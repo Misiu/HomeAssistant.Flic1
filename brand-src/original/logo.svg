@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 256" width="1000" height="256">
+  <defs>
+    <linearGradient id="body" x1="0.12" y1="0" x2="0.88" y2="1">
+      <stop offset="0" stop-color="#3fe0cb"/>
+      <stop offset="1" stop-color="#0a6f66"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#8af5e6"/>
+      <stop offset="1" stop-color="#1bb3a2"/>
+    </linearGradient>
+    <radialGradient id="led" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fffdf0"/>
+      <stop offset="0.35" stop-color="#ffe85e"/>
+      <stop offset="1" stop-color="#ffb300" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shine" cx="0.3" cy="0.2" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="128" cy="128" r="128" fill="url(#body)"/>
+  <circle cx="128" cy="128" r="104" fill="url(#face)"/>
+  <circle cx="128" cy="128" r="104" fill="none" stroke="#08574f" stroke-opacity="0.35" stroke-width="3"/>
+  <circle cx="128" cy="128" r="104" fill="url(#shine)"/>
+  <circle cx="128" cy="62" r="30" fill="url(#led)"/>
+  <circle cx="128" cy="62" r="8.5" fill="#fff6b3"/>
+  <circle cx="128" cy="62" r="8.5" fill="none" stroke="#e2a400" stroke-opacity="0.6" stroke-width="2"/>
+  <text x="128" y="190" text-anchor="middle" font-family="Bahnschrift, 'Segoe UI', Arial, sans-serif" font-weight="700" font-size="124" fill="#08463f">1</text>
+  <!-- wordmark -->
+  <text x="296" y="178" font-family="Bahnschrift, 'Segoe UI', Arial, sans-serif" font-weight="600" font-size="168" fill="__TEXT__">Flic <tspan fill="__ACCENT__" font-weight="700">1</tspan></text>
+</svg>
