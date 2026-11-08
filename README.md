@@ -5,8 +5,8 @@ daemon or a USB dongle. The integration connects to the buttons through **ESPHom
 
 Status: works on real hardware (two buttons with firmware 23, ESPHome proxies, Home Assistant 2026.10).
 
-This integration is only for Flic 1. For Flic 2, Flic Duo and Flic Twist use the official `flic_button`
-integration of Home Assistant. This project is not made or supported by Flic (Shortcut Labs).
+This integration is only for Flic 1. Flic does not sell this model any more, so the integration is meant for people who
+already own the buttons. For Flic 2, Flic Duo and Flic Twist use the official `flic_button` integration of Home Assistant. This project is not made or supported by Flic (Shortcut Labs).
 
 ## Important: a button works only with the proxy it was paired through
 
@@ -122,9 +122,6 @@ logs. It protects against typos and known bugs, but it cannot find a mistake in 
 - `custom_components/flic1/pyflic1/`: protocol (`protocol.py`), Bluetooth session (`client.py`), cloud call (`cloud.py`)
 - `custom_components/flic1/`: Home Assistant part (config flow, coordinator, event and battery entities)
 - `notes/spec.md`: description of the protocol and what was seen on real buttons
-- `ha_core_flic_button/`: draft of Flic 1 support for the official Home Assistant `flic_button` integration (work in
-  progress, not tested in Home Assistant yet). It needs a release of the `pyflic-ble` library with Flic 1 support.
-  `flic1-support.diff` shows the changes to the integration code, compared with Home Assistant 2026.11.0b0.
 - `tools/build_brand.py`: builds the brand images
 
 The protocol was reconstructed from the Flic Linux daemon and the Flic Android app, and checked on real buttons.
@@ -138,5 +135,4 @@ publish this work.
 
 ## License
 
-MIT, see `LICENSE`. The folder `ha_core_flic_button/` holds changes to the Home Assistant core integration
-`flic_button`. That code stays under the license of Home Assistant core, which is Apache-2.0.
+MIT, see `LICENSE`.
